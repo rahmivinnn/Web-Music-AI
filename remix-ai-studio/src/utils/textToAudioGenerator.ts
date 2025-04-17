@@ -61,75 +61,196 @@ const generateAudioParams = (analysis: any): AudioParams => {
   };
 };
 
-// Generate speech audio from text using Web Speech API
-export const generateSpeechFromText = (text: string, voiceType: string): Promise<Blob> => {
-  return new Promise((resolve, reject) => {
-    // Check if speech synthesis is available
-    if (!window.speechSynthesis) {
-      console.error('Speech synthesis not supported');
-      reject(new Error('Speech synthesis not supported'));
-      return;
-    }
-
-    // Create utterance
-    const utterance = new SpeechSynthesisUtterance(text);
-
-    // Find matching voice
-    const voice = findMatchingVoice(voiceType);
-    if (voice) {
-      utterance.voice = voice;
-
-      // Set voice characteristics based on voice type
+// Generate musical tones based on text and voice type
+export const generateMusicalTones = (text: string, voiceType: string, genre: string = 'default'): Promise<AudioBuffer> => {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const audioContext = getAudioContext();
+      const analysis = analyzePrompt(text);
       const voiceSample = voiceSamples[voiceType] || voiceSamples.default;
 
+      // Create a longer buffer for musical content
+      const duration = 4.0; // 4 seconds of audio
+      const sampleRate = audioContext.sampleRate;
+      const bufferSize = Math.floor(sampleRate * duration);
+      const audioBuffer = audioContext.createBuffer(2, bufferSize, sampleRate);
+
+      // Generate base frequencies based on the text content and voice type
+      const baseFrequency = getBaseFrequency(analysis.detectedGenre, analysis.detectedMood);
+
+      // Apply gender-specific frequency adjustments
+      let frequencyMultiplier = 1.0;
+      let harmonicContent = 0.5;
+
       if (voiceSample.gender === 'male') {
-        utterance.pitch = 0.9; // Slightly lower pitch for male voices
-        utterance.rate = 0.9; // Slightly slower rate
+        frequencyMultiplier = 0.7; // Lower pitch for male voices
+        harmonicContent = 0.7; // More harmonic content for richness
       } else if (voiceSample.gender === 'female') {
-        utterance.pitch = 1.1; // Slightly higher pitch for female voices
-        utterance.rate = 1.0;
-      } else {
-        // Neutral/robotic voice
-        utterance.pitch = 1.0;
-        utterance.rate = 1.0;
+        frequencyMultiplier = 1.3; // Higher pitch for female voices
+        harmonicContent = 0.4; // Less harmonic content for clarity
       }
+
+      // Generate musical patterns based on the text
+      const patterns = generateMusicPatterns(text, analysis.intensity);
+
+      // Fill audio buffer with generated tones
+      for (let channel = 0; channel < 2; channel++) {
+        const channelData = audioBuffer.getChannelData(channel);
+
+        // Apply the patterns to create musical phrases
+        for (let i = 0; i < bufferSize; i++) {
+          const t = i / sampleRate;
+          let sample = 0;
+
+          // Create a musical phrase from the patterns
+          for (let j = 0; j < patterns.length; j++) {
+            const pattern = patterns[j];
+            const patternFreq = baseFrequency * frequencyMultiplier * pattern.frequencyRatio;
+            const patternPhase = 2.0 * Math.PI * patternFreq * t;
+
+            // Mix different waveforms for richer sound
+            const sineTone = Math.sin(patternPhase);
+            const squareTone = Math.sign(Math.sin(patternPhase * 1.01)); // Slightly detuned for chorus effect
+            const sawTone = ((t * patternFreq * 1.02) % 1) * 2 - 1; // More detuning
+
+            // Mix the waveforms based on gender characteristics
+            let waveMix = sineTone * (1 - harmonicContent) +
+                         squareTone * (harmonicContent * 0.5) +
+                         sawTone * (harmonicContent * 0.5);
+
+            // Apply envelope from the pattern
+            const envelope = getEnvelopeValue(t, pattern, duration);
+
+            // Add to the sample
+            sample += waveMix * envelope * pattern.amplitude;
+          }
+
+          // Apply overall envelope and normalization
+          const fadeIn = Math.min(1.0, t / 0.1);
+          const fadeOut = Math.min(1.0, (duration - t) / 0.2);
+          const masterEnvelope = fadeIn * fadeOut;
+
+          channelData[i] = sample * masterEnvelope * 0.5; // Normalize to prevent clipping
+        }
+      }
+
+      resolve(audioBuffer);
+    } catch (error) {
+      console.error('Error generating musical tones:', error);
+      reject(error);
     }
-
-    // Create a MediaRecorder to capture the audio
-    const audioChunks: Blob[] = [];
-    const audioContext = new AudioContext();
-    const destination = audioContext.createMediaStreamDestination();
-    const mediaRecorder = new MediaRecorder(destination.stream);
-
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        audioChunks.push(event.data);
-      }
-    };
-
-    mediaRecorder.onstop = () => {
-      const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-      resolve(audioBlob);
-    };
-
-    // Start recording
-    mediaRecorder.start();
-
-    // Handle speech synthesis events
-    utterance.onend = () => {
-      mediaRecorder.stop();
-      window.speechSynthesis.cancel(); // Clean up
-    };
-
-    utterance.onerror = (event) => {
-      mediaRecorder.stop();
-      reject(new Error(`Speech synthesis error: ${event.error}`));
-    };
-
-    // Speak the text
-    window.speechSynthesis.speak(utterance);
   });
 };
+
+// Generate music patterns from text
+function generateMusicPatterns(text: string, intensity: number) {
+  const patterns = [];
+
+  // Create patterns based on text characteristics
+  const words = text.split(/\s+/);
+  const wordCount = words.length;
+
+  // Base pattern - main melody
+  patterns.push({
+    frequencyRatio: 1.0,
+    amplitude: 0.7,
+    attackTime: 0.05,
+    decayTime: 0.1,
+    sustainLevel: 0.6,
+    releaseTime: 0.2,
+    startTime: 0,
+    duration: 4.0,
+    repeatInterval: 0.5
+  });
+
+  // Add harmonics based on word count
+  if (wordCount > 3) {
+    patterns.push({
+      frequencyRatio: 1.5, // Perfect fifth
+      amplitude: 0.4,
+      attackTime: 0.1,
+      decayTime: 0.2,
+      sustainLevel: 0.3,
+      releaseTime: 0.3,
+      startTime: 0.25, // Offset start
+      duration: 3.5,
+      repeatInterval: 1.0
+    });
+  }
+
+  // Add bass line for longer texts
+  if (wordCount > 5) {
+    patterns.push({
+      frequencyRatio: 0.5, // One octave down
+      amplitude: 0.5,
+      attackTime: 0.15,
+      decayTime: 0.3,
+      sustainLevel: 0.4,
+      releaseTime: 0.4,
+      startTime: 0.5, // Offset start
+      duration: 3.0,
+      repeatInterval: 1.5
+    });
+  }
+
+  // Add intensity-based pattern
+  patterns.push({
+    frequencyRatio: 2.0, // One octave up
+    amplitude: intensity * 0.5,
+    attackTime: 0.02,
+    decayTime: 0.1,
+    sustainLevel: 0.2,
+    releaseTime: 0.1,
+    startTime: 0.125, // Offset start
+    duration: 3.75,
+    repeatInterval: 0.25
+  });
+
+  return patterns;
+}
+
+// Calculate envelope value at a given time
+function getEnvelopeValue(time: number, pattern: any, totalDuration: number) {
+  // Check if this is an active repetition of the pattern
+  const patternDuration = pattern.duration;
+  const repeatInterval = pattern.repeatInterval;
+  const patternStartTime = pattern.startTime;
+
+  // Determine which repetition this is
+  const repetitions = Math.floor((totalDuration - patternStartTime) / repeatInterval);
+
+  for (let rep = 0; rep < repetitions; rep++) {
+    const repStartTime = patternStartTime + (rep * repeatInterval);
+    const repEndTime = repStartTime + patternDuration;
+
+    if (time >= repStartTime && time < repEndTime) {
+      // This is an active repetition, calculate envelope
+      const patternTime = time - repStartTime;
+
+      // ADSR envelope
+      const { attackTime, decayTime, sustainLevel, releaseTime } = pattern;
+      const sustainTime = patternDuration - attackTime - decayTime - releaseTime;
+
+      if (patternTime < attackTime) {
+        // Attack phase
+        return (patternTime / attackTime);
+      } else if (patternTime < attackTime + decayTime) {
+        // Decay phase
+        const decayProgress = (patternTime - attackTime) / decayTime;
+        return 1.0 - ((1.0 - sustainLevel) * decayProgress);
+      } else if (patternTime < attackTime + decayTime + sustainTime) {
+        // Sustain phase
+        return sustainLevel;
+      } else {
+        // Release phase
+        const releaseProgress = (patternTime - (attackTime + decayTime + sustainTime)) / releaseTime;
+        return sustainLevel * (1.0 - releaseProgress);
+      }
+    }
+  }
+
+  return 0; // Not in any active repetition
+}
 
 // Fallback to generate audio from text prompt using oscillators
 export const generateAudioFromText = async (prompt: string): Promise<AudioBuffer> => {
@@ -186,60 +307,234 @@ export const generateAudioFromText = async (prompt: string): Promise<AudioBuffer
   return audioBuffer;
 };
 
-// Play generated audio with voice type
-export const playGeneratedAudio = async (prompt: string, voiceType: string = 'default'): Promise<string> => {
-  try {
-    // First try to generate speech using Web Speech API
-    try {
-      if (window.speechSynthesis) {
-        // Initialize speech synthesis
-        window.speechSynthesis.cancel(); // Clear any previous speech
+// Apply genre-specific effects to audio buffer
+const applyGenreEffects = (audioContext: AudioContext, audioBuffer: AudioBuffer, genre: string): AudioBuffer => {
+  // Create a new buffer for the processed audio
+  const processedBuffer = audioContext.createBuffer(
+    audioBuffer.numberOfChannels,
+    audioBuffer.length,
+    audioBuffer.sampleRate
+  );
 
-        // Load voices if needed
-        if (window.speechSynthesis.getVoices().length === 0) {
-          await new Promise<void>(resolve => {
-            window.speechSynthesis.onvoiceschanged = () => resolve();
-            // Set a timeout in case onvoiceschanged doesn't fire
-            setTimeout(resolve, 1000);
-          });
+  // Apply different effects based on genre
+  switch (genre.toLowerCase()) {
+    case 'rnb':
+    case 'r&b':
+      // Apply R&B effects: warm bass, smooth mids, slight compression
+      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+        const inputData = audioBuffer.getChannelData(channel);
+        const outputData = processedBuffer.getChannelData(channel);
+
+        // Apply low-pass filter effect (simulate warm bass)
+        let lastOutput = 0;
+        const filterCoeff = 0.2; // Lower = stronger filter
+
+        for (let i = 0; i < inputData.length; i++) {
+          // Simple low-pass filter
+          lastOutput = lastOutput * (1 - filterCoeff) + inputData[i] * filterCoeff;
+
+          // Add some harmonic distortion for warmth
+          const distortion = Math.tanh(lastOutput * 1.5) * 0.3;
+
+          // Mix original with processed
+          outputData[i] = lastOutput * 0.7 + distortion * 0.3;
+
+          // Apply soft compression
+          if (outputData[i] > 0.8) outputData[i] = 0.8 + (outputData[i] - 0.8) * 0.5;
+          if (outputData[i] < -0.8) outputData[i] = -0.8 + (outputData[i] + 0.8) * 0.5;
         }
-
-        // Generate speech from text
-        const audioBlob = await generateSpeechFromText(prompt, voiceType);
-        const audioUrl = URL.createObjectURL(audioBlob);
-
-        // Play the audio
-        const audio = new Audio(audioUrl);
-        audio.play();
-
-        console.log('Playing generated speech from prompt:', prompt);
-        return audioUrl;
       }
-    } catch (speechError) {
-      console.warn('Speech synthesis failed, falling back to oscillator:', speechError);
-    }
+      break;
 
-    // Fallback to oscillator-based audio if speech synthesis fails
+    case 'edm':
+    case 'electronic':
+      // Apply EDM effects: punchy, bright, sidechained
+      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+        const inputData = audioBuffer.getChannelData(channel);
+        const outputData = processedBuffer.getChannelData(channel);
+
+        for (let i = 0; i < inputData.length; i++) {
+          // Add brightness (high frequency emphasis)
+          const brightness = inputData[i] * 1.2;
+
+          // Add some distortion for punch
+          const distortion = Math.tanh(inputData[i] * 2.0) * 0.3;
+
+          // Mix and apply sidechain-like pumping effect (4 beats per second)
+          const t = i / audioBuffer.sampleRate;
+          const pumpAmount = 0.5 + 0.5 * Math.sin(2 * Math.PI * 4 * t - Math.PI/2);
+
+          outputData[i] = (brightness * 0.6 + distortion * 0.4) * pumpAmount;
+        }
+      }
+      break;
+
+    case 'hiphop':
+    case 'trap':
+      // Apply Hip-hop/Trap effects: heavy bass, gritty texture
+      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+        const inputData = audioBuffer.getChannelData(channel);
+        const outputData = processedBuffer.getChannelData(channel);
+
+        for (let i = 0; i < inputData.length; i++) {
+          // Enhance bass (simulate 808)
+          const t = i / audioBuffer.sampleRate;
+          const bassEnhance = Math.sin(2 * Math.PI * 60 * t) * 0.3; // 60Hz sine wave
+
+          // Add gritty texture
+          const grit = (Math.random() * 2 - 1) * 0.05;
+
+          // Mix with original
+          outputData[i] = inputData[i] * 0.7 + bassEnhance * 0.25 + grit * 0.05;
+        }
+      }
+      break;
+
+    case 'lofi':
+      // Apply Lo-fi effects: vinyl crackle, bit reduction, warm filtering
+      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+        const inputData = audioBuffer.getChannelData(channel);
+        const outputData = processedBuffer.getChannelData(channel);
+
+        let lastOutput = 0;
+        const filterCoeff = 0.15; // Warm filter
+
+        for (let i = 0; i < inputData.length; i++) {
+          // Warm filter
+          lastOutput = lastOutput * (1 - filterCoeff) + inputData[i] * filterCoeff;
+
+          // Bit reduction (quantization)
+          const bitDepth = 6; // Lower = more lo-fi
+          const quantizedOutput = Math.round(lastOutput * Math.pow(2, bitDepth)) / Math.pow(2, bitDepth);
+
+          // Add vinyl crackle
+          const crackle = (Math.random() * 2 - 1) * 0.03;
+
+          outputData[i] = quantizedOutput * 0.85 + crackle * 0.15;
+        }
+      }
+      break;
+
+    default:
+      // Default processing: slight enhancement
+      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+        const inputData = audioBuffer.getChannelData(channel);
+        const outputData = processedBuffer.getChannelData(channel);
+
+        for (let i = 0; i < inputData.length; i++) {
+          // Just add a bit of harmonic enhancement
+          const enhancement = Math.tanh(inputData[i] * 1.2) * 0.1;
+          outputData[i] = inputData[i] * 0.9 + enhancement * 0.1;
+        }
+      }
+  }
+
+  return processedBuffer;
+};
+
+// Play generated audio with voice type and genre effects
+export const playGeneratedAudio = async (prompt: string, voiceType: string = 'default', genre: string = 'default'): Promise<string> => {
+  try {
     const audioContext = getAudioContext();
-    const audioBuffer = await generateAudioFromText(prompt);
 
+    // Generate musical tones based on the text and voice type
+    const audioBuffer = await generateMusicalTones(prompt, voiceType, genre);
+
+    // Apply genre-specific effects
+    const processedBuffer = applyGenreEffects(audioContext, audioBuffer, genre);
+
+    // Create a source node for playback
     const source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
+    source.buffer = processedBuffer;
 
+    // Create a gain node for volume control
     const gainNode = audioContext.createGain();
-    gainNode.gain.value = 0.5; // Set initial volume
+    gainNode.gain.value = 0.7; // Set volume
 
+    // Connect the nodes
     source.connect(gainNode);
     gainNode.connect(audioContext.destination);
 
+    // Start playback
     source.start();
-    console.log('Playing fallback audio from prompt:', prompt);
+    console.log('Playing generated audio with voice type:', voiceType, 'and genre:', genre);
 
-    // Create a blob URL for the audio player
-    const fallbackSample = voiceSamples[voiceType] || voiceSamples.default;
-    return fallbackSample.fallbackUrl;
+    // Convert the buffer to a blob for the audio player
+    const offlineContext = new OfflineAudioContext({
+      numberOfChannels: processedBuffer.numberOfChannels,
+      length: processedBuffer.length,
+      sampleRate: processedBuffer.sampleRate
+    });
+
+    const offlineSource = offlineContext.createBufferSource();
+    offlineSource.buffer = processedBuffer;
+    offlineSource.connect(offlineContext.destination);
+    offlineSource.start();
+
+    const renderedBuffer = await offlineContext.startRendering();
+
+    // Convert the rendered buffer to a WAV file
+    const wavBlob = await audioBufferToWav(renderedBuffer);
+    const audioUrl = URL.createObjectURL(wavBlob);
+
+    return audioUrl;
   } catch (error) {
     console.error('Error playing generated audio:', error);
-    throw error;
+
+    // Return a fallback URL if generation fails
+    const fallbackSample = voiceSamples[voiceType] || voiceSamples.default;
+    return fallbackSample.fallbackUrl;
   }
 };
+
+// Convert AudioBuffer to WAV format
+async function audioBufferToWav(audioBuffer: AudioBuffer): Promise<Blob> {
+  const numOfChannels = audioBuffer.numberOfChannels;
+  const length = audioBuffer.length * numOfChannels * 2; // 2 bytes per sample (16-bit)
+  const buffer = new ArrayBuffer(44 + length); // 44 bytes for WAV header
+  const view = new DataView(buffer);
+
+  // Write WAV header
+  // "RIFF" chunk descriptor
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + length, true);
+  writeString(view, 8, 'WAVE');
+
+  // "fmt " sub-chunk
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true); // fmt chunk size
+  view.setUint16(20, 1, true); // audio format (1 for PCM)
+  view.setUint16(22, numOfChannels, true);
+  view.setUint32(24, audioBuffer.sampleRate, true);
+  view.setUint32(28, audioBuffer.sampleRate * numOfChannels * 2, true); // byte rate
+  view.setUint16(32, numOfChannels * 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+
+  // "data" sub-chunk
+  writeString(view, 36, 'data');
+  view.setUint32(40, length, true);
+
+  // Write audio data
+  const offset = 44;
+  const channelData = [];
+  for (let i = 0; i < numOfChannels; i++) {
+    channelData.push(audioBuffer.getChannelData(i));
+  }
+
+  for (let i = 0; i < audioBuffer.length; i++) {
+    for (let channel = 0; channel < numOfChannels; channel++) {
+      const sample = Math.max(-1, Math.min(1, channelData[channel][i]));
+      const int16 = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+      view.setInt16(offset + (i * numOfChannels + channel) * 2, int16, true);
+    }
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+// Helper function to write strings to DataView
+function writeString(view: DataView, offset: number, string: string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}

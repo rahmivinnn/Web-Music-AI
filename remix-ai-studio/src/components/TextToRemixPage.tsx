@@ -76,13 +76,13 @@ const TextToRemixPage = () => {
       // Make sure audio context is resumed
       await resumeAudioContext();
 
-      // Generate audio from prompt with selected voice
-      const audioUrl = await playGeneratedAudio(prompt, voice);
+      // Generate audio from prompt with selected voice and genre
+      const audioUrl = await playGeneratedAudio(prompt, voice, genre);
 
       // Update state with the generated audio URL
       setGeneratedAudioUrl(audioUrl);
       setShowResult(true);
-      toast.success('Your audio has been generated successfully!');
+      toast.success(`Your ${voice} voice with ${genre} style has been generated successfully!`);
     } catch (error) {
       console.error('Error generating audio:', error);
       setProcessingError('Failed to generate audio. Please try again.');
