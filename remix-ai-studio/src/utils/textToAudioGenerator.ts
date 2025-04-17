@@ -307,8 +307,14 @@ export const generateAudioFromText = async (prompt: string): Promise<AudioBuffer
   return audioBuffer;
 };
 
-// Apply genre-specific effects to audio buffer
-const applyGenreEffects = (audioContext: AudioContext, audioBuffer: AudioBuffer, genre: string): AudioBuffer => {
+// Apply genre-specific effects to audio buffer with voice characteristics
+const applyGenreEffects = (audioContext: AudioContext, audioBuffer: AudioBuffer, genre: string, voiceType: string = 'default'): AudioBuffer => {
+  // Get voice characteristics
+  const voiceSample = voiceSamples[voiceType] || voiceSamples.default;
+  const voicePrefs = voiceSample.effectPreferences;
+
+  console.log(`Applying ${genre} effects with ${voiceType} voice characteristics`);
+
   // Create a new buffer for the processed audio
   const processedBuffer = audioContext.createBuffer(
     audioBuffer.numberOfChannels,
@@ -316,7 +322,7 @@ const applyGenreEffects = (audioContext: AudioContext, audioBuffer: AudioBuffer,
     audioBuffer.sampleRate
   );
 
-  // Apply different effects based on genre
+  // Apply different effects based on genre, influenced by voice characteristics
   switch (genre.toLowerCase()) {
     case 'rnb':
     case 'r&b':
@@ -326,22 +332,35 @@ const applyGenreEffects = (audioContext: AudioContext, audioBuffer: AudioBuffer,
         const outputData = processedBuffer.getChannelData(channel);
 
         // Apply low-pass filter effect (simulate warm bass)
+        // Adjust filter based on voice preference
         let lastOutput = 0;
-        const filterCoeff = 0.2; // Lower = stronger filter
+        const filterCoeff = 0.2 * (1 - voicePrefs.distortion * 0.5); // Lower = stronger filter
 
         for (let i = 0; i < inputData.length; i++) {
           // Simple low-pass filter
           lastOutput = lastOutput * (1 - filterCoeff) + inputData[i] * filterCoeff;
 
-          // Add some harmonic distortion for warmth
-          const distortion = Math.tanh(lastOutput * 1.5) * 0.3;
+          // Add some harmonic distortion for warmth - adjusted by voice preference
+          const distortion = Math.tanh(lastOutput * (1.5 + voicePrefs.distortion)) * (0.3 + voicePrefs.distortion * 0.2);
 
-          // Mix original with processed
-          outputData[i] = lastOutput * 0.7 + distortion * 0.3;
+          // Add reverb simulation (simplified)
+          const t = i / audioBuffer.sampleRate;
+          const reverbAmount = voicePrefs.reverb * 0.3;
+          const reverbTime = 0.3; // 300ms reverb tail
+          const reverb = Math.exp(-t / reverbTime) * reverbAmount * (Math.random() * 0.1);
 
-          // Apply soft compression
-          if (outputData[i] > 0.8) outputData[i] = 0.8 + (outputData[i] - 0.8) * 0.5;
-          if (outputData[i] < -0.8) outputData[i] = -0.8 + (outputData[i] + 0.8) * 0.5;
+          // Mix original with processed, influenced by voice preferences
+          const mixRatio = 0.7 - (voicePrefs.chorus * 0.2); // Less dry signal with more chorus
+          outputData[i] = lastOutput * mixRatio + distortion * (1 - mixRatio) + reverb;
+
+          // Apply soft compression - adjusted by voice preference
+          const threshold = 0.8 - (voicePrefs.compression * 0.3); // Lower threshold with higher compression
+          if (outputData[i] > threshold) {
+            outputData[i] = threshold + (outputData[i] - threshold) * (0.5 - voicePrefs.compression * 0.3);
+          }
+          if (outputData[i] < -threshold) {
+            outputData[i] = -threshold + (outputData[i] + threshold) * (0.5 - voicePrefs.compression * 0.3);
+          }
         }
       }
       break;
@@ -354,17 +373,27 @@ const applyGenreEffects = (audioContext: AudioContext, audioBuffer: AudioBuffer,
         const outputData = processedBuffer.getChannelData(channel);
 
         for (let i = 0; i < inputData.length; i++) {
-          // Add brightness (high frequency emphasis)
-          const brightness = inputData[i] * 1.2;
+          // Add brightness (high frequency emphasis) - adjusted by voice
+          const brightness = inputData[i] * (1.2 + voicePrefs.distortion * 0.3);
 
-          // Add some distortion for punch
-          const distortion = Math.tanh(inputData[i] * 2.0) * 0.3;
+          // Add some distortion for punch - adjusted by voice
+          const distortion = Math.tanh(inputData[i] * (2.0 + voicePrefs.distortion * 1.0)) * (0.3 + voicePrefs.distortion * 0.2);
 
           // Mix and apply sidechain-like pumping effect (4 beats per second)
+          // Adjust pump speed based on voice characteristics
           const t = i / audioBuffer.sampleRate;
-          const pumpAmount = 0.5 + 0.5 * Math.sin(2 * Math.PI * 4 * t - Math.PI/2);
+          const pumpSpeed = 4 + (voiceSample.attack < 0.05 ? 1 : 0); // Faster pump for quick attack voices
+          const pumpAmount = 0.5 + 0.5 * Math.sin(2 * Math.PI * pumpSpeed * t - Math.PI/2);
 
-          outputData[i] = (brightness * 0.6 + distortion * 0.4) * pumpAmount;
+          // Add chorus effect based on voice preference
+          const chorusDepth = voicePrefs.chorus * 0.01;
+          const chorusRate = 2; // 2 Hz
+          const chorus = Math.sin(2 * Math.PI * chorusRate * t) * chorusDepth * inputData[i];
+
+          // Mix with voice-specific weighting
+          outputData[i] = ((brightness * (0.6 - voicePrefs.chorus * 0.2) +
+                          distortion * (0.4 + voicePrefs.distortion * 0.1)) *
+                          pumpAmount) + chorus;
         }
       }
       break;
@@ -377,15 +406,31 @@ const applyGenreEffects = (audioContext: AudioContext, audioBuffer: AudioBuffer,
         const outputData = processedBuffer.getChannelData(channel);
 
         for (let i = 0; i < inputData.length; i++) {
-          // Enhance bass (simulate 808)
           const t = i / audioBuffer.sampleRate;
-          const bassEnhance = Math.sin(2 * Math.PI * 60 * t) * 0.3; // 60Hz sine wave
 
-          // Add gritty texture
-          const grit = (Math.random() * 2 - 1) * 0.05;
+          // Enhance bass (simulate 808) - adjusted by voice base frequency
+          // Lower voices get more bass emphasis
+          const bassFreq = 60 - (voiceSample.baseFrequency < 150 ? 10 : 0); // Lower bass freq for deeper voices
+          const bassAmount = 0.3 + (voiceSample.baseFrequency < 150 ? 0.1 : 0); // More bass for deeper voices
+          const bassEnhance = Math.sin(2 * Math.PI * bassFreq * t) * bassAmount;
 
-          // Mix with original
-          outputData[i] = inputData[i] * 0.7 + bassEnhance * 0.25 + grit * 0.05;
+          // Add gritty texture - adjusted by voice distortion preference
+          const gritAmount = 0.05 + (voicePrefs.distortion * 0.03);
+          const grit = (Math.random() * 2 - 1) * gritAmount;
+
+          // Add delay effect based on voice preference
+          const delayTime = 0.25; // 250ms delay
+          const delayAmount = voicePrefs.delay * 0.2;
+          let delaySignal = 0;
+          if (i > delayTime * audioBuffer.sampleRate) {
+            const delayIndex = i - Math.floor(delayTime * audioBuffer.sampleRate);
+            delaySignal = inputData[delayIndex] * delayAmount;
+          }
+
+          // Mix with original - adjusted by voice compression preference
+          const dryMix = 0.7 - (voicePrefs.compression * 0.1);
+          outputData[i] = inputData[i] * dryMix + bassEnhance * (0.25 + voicePrefs.distortion * 0.05) +
+                          grit * (0.05 + voicePrefs.distortion * 0.02) + delaySignal;
         }
       }
       break;
@@ -397,34 +442,62 @@ const applyGenreEffects = (audioContext: AudioContext, audioBuffer: AudioBuffer,
         const outputData = processedBuffer.getChannelData(channel);
 
         let lastOutput = 0;
-        const filterCoeff = 0.15; // Warm filter
+        // Adjust filter based on voice harmonics
+        const filterCoeff = 0.15 * (1 + voiceSample.harmonicContent * 0.3); // Warmer filter for voices with less harmonics
 
         for (let i = 0; i < inputData.length; i++) {
           // Warm filter
           lastOutput = lastOutput * (1 - filterCoeff) + inputData[i] * filterCoeff;
 
-          // Bit reduction (quantization)
-          const bitDepth = 6; // Lower = more lo-fi
+          // Bit reduction (quantization) - adjusted by voice
+          // More bit reduction for robotic voices, less for natural voices
+          const bitDepth = 6 - Math.floor(voicePrefs.distortion * 2); // Lower = more lo-fi
           const quantizedOutput = Math.round(lastOutput * Math.pow(2, bitDepth)) / Math.pow(2, bitDepth);
 
-          // Add vinyl crackle
-          const crackle = (Math.random() * 2 - 1) * 0.03;
+          // Add vinyl crackle - adjusted by voice reverb preference
+          const crackleAmount = 0.03 + (voicePrefs.reverb * 0.02);
+          const crackle = (Math.random() * 2 - 1) * crackleAmount;
 
-          outputData[i] = quantizedOutput * 0.85 + crackle * 0.15;
+          // Add chorus effect based on voice preference
+          const t = i / audioBuffer.sampleRate;
+          const chorusDepth = voicePrefs.chorus * 0.01;
+          const chorusRate = 1; // 1 Hz
+          const chorus = Math.sin(2 * Math.PI * chorusRate * t) * chorusDepth * lastOutput;
+
+          // Mix with voice-specific weighting
+          const dryWet = 0.85 - (voicePrefs.chorus * 0.1);
+          outputData[i] = quantizedOutput * dryWet + crackle * (0.15 + voicePrefs.reverb * 0.05) + chorus;
         }
       }
       break;
 
     default:
-      // Default processing: slight enhancement
+      // Default processing: voice-specific enhancement
       for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
         const inputData = audioBuffer.getChannelData(channel);
         const outputData = processedBuffer.getChannelData(channel);
 
         for (let i = 0; i < inputData.length; i++) {
-          // Just add a bit of harmonic enhancement
-          const enhancement = Math.tanh(inputData[i] * 1.2) * 0.1;
-          outputData[i] = inputData[i] * 0.9 + enhancement * 0.1;
+          const t = i / audioBuffer.sampleRate;
+
+          // Add harmonic enhancement based on voice characteristics
+          const enhancementAmount = 1.2 + (voiceSample.harmonicContent * 0.5);
+          const enhancement = Math.tanh(inputData[i] * enhancementAmount) * (0.1 + voicePrefs.distortion * 0.1);
+
+          // Add subtle chorus based on voice preference
+          const chorusDepth = voicePrefs.chorus * 0.005;
+          const chorusRate = 0.5; // 0.5 Hz
+          const chorus = Math.sin(2 * Math.PI * chorusRate * t) * chorusDepth * inputData[i];
+
+          // Add subtle reverb based on voice preference
+          const reverbAmount = voicePrefs.reverb * 0.05;
+          const reverbTime = 0.2; // 200ms reverb tail
+          const reverb = Math.exp(-t / reverbTime) * reverbAmount * (Math.random() * 0.1);
+
+          // Mix with voice-specific weighting
+          outputData[i] = inputData[i] * (0.9 - voicePrefs.reverb * 0.1) +
+                          enhancement * (0.1 + voicePrefs.distortion * 0.05) +
+                          chorus + reverb;
         }
       }
   }
@@ -442,9 +515,9 @@ export const playGeneratedAudio = async (prompt: string, voiceType: string = 'de
     const audioBuffer = await generateMusicalTones(prompt, voiceType, genre);
     console.log('Generated audio buffer:', audioBuffer.duration, 'seconds');
 
-    // Apply genre-specific effects
-    const processedBuffer = applyGenreEffects(audioContext, audioBuffer, genre);
-    console.log('Applied', genre, 'effects to audio');
+    // Apply genre-specific effects with voice characteristics
+    const processedBuffer = applyGenreEffects(audioContext, audioBuffer, genre, voiceType);
+    console.log('Applied', genre, 'effects with', voiceType, 'voice characteristics');
 
     try {
       // Create a source node for live playback
