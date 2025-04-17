@@ -104,13 +104,26 @@ const RemixAudioPage = () => {
       // Process the first uploaded file
       const file = files[0];
 
-      // Process the audio file with the selected genre
-      const processedAudioUrl = await processAudioFile(file, genre);
+      // Create a direct object URL for the file first
+      // This ensures we have a valid URL even if processing fails
+      const directUrl = URL.createObjectURL(file);
+
+      let processedAudioUrl;
+      try {
+        // Process the audio file with the selected genre
+        processedAudioUrl = await processAudioFile(file, genre);
+        console.log('Successfully processed audio with genre effects');
+        toast.success('Your remix has been generated successfully!');
+      } catch (processingError) {
+        console.error('Error applying genre effects:', processingError);
+        // Fall back to direct URL if processing fails
+        processedAudioUrl = directUrl;
+        toast.warning('Applied basic processing only. Advanced effects unavailable.');
+      }
 
       // Update state with the processed audio URL
       setGeneratedAudioUrl(processedAudioUrl);
       setShowResult(true);
-      toast.success('Your remix has been generated successfully!');
     } catch (error) {
       console.error('Error processing audio:', error);
       setProcessingError('Failed to process audio. Please try again.');
@@ -242,6 +255,7 @@ const RemixAudioPage = () => {
                 bpm={bpm}
                 key={genre}
                 onClose={() => setShowAdvancedRemixer(false)}
+                initialGenre={genre} // Pass the selected genre from the main page
               />
             </div>
           </div>

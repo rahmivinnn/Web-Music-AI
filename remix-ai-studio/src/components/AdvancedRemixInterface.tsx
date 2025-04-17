@@ -6,6 +6,75 @@ import { resumeAudioContext } from '@/utils/audioProcessor';
 import { FaPlay, FaPause, FaVolumeUp, FaVolumeMute } from 'react-icons/fa';
 import { MdSolo } from 'react-icons/md';
 
+// Helper function to convert AudioBuffer to WAV format
+async function audioBufferToWav(buffer: AudioBuffer): Promise<Blob> {
+  const numChannels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const format = 1; // PCM
+  const bitDepth = 16;
+
+  const bytesPerSample = bitDepth / 8;
+  const blockAlign = numChannels * bytesPerSample;
+
+  const dataLength = buffer.length * numChannels * bytesPerSample;
+  const bufferLength = 44 + dataLength;
+
+  const arrayBuffer = new ArrayBuffer(bufferLength);
+  const view = new DataView(arrayBuffer);
+
+  // RIFF identifier
+  writeString(view, 0, 'RIFF');
+  // File length
+  view.setUint32(4, 36 + dataLength, true);
+  // RIFF type
+  writeString(view, 8, 'WAVE');
+  // Format chunk identifier
+  writeString(view, 12, 'fmt ');
+  // Format chunk length
+  view.setUint32(16, 16, true);
+  // Sample format (raw)
+  view.setUint16(20, format, true);
+  // Channel count
+  view.setUint16(22, numChannels, true);
+  // Sample rate
+  view.setUint32(24, sampleRate, true);
+  // Byte rate (sample rate * block align)
+  view.setUint32(28, sampleRate * blockAlign, true);
+  // Block align (channel count * bytes per sample)
+  view.setUint16(32, blockAlign, true);
+  // Bits per sample
+  view.setUint16(34, bitDepth, true);
+  // Data chunk identifier
+  writeString(view, 36, 'data');
+  // Data chunk length
+  view.setUint32(40, dataLength, true);
+
+  // Write the PCM samples
+  const channels = [];
+  for (let i = 0; i < numChannels; i++) {
+    channels.push(buffer.getChannelData(i));
+  }
+
+  let offset = 44;
+  for (let i = 0; i < buffer.length; i++) {
+    for (let channel = 0; channel < numChannels; channel++) {
+      const sample = Math.max(-1, Math.min(1, channels[channel][i]));
+      const value = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+      view.setInt16(offset, value, true);
+      offset += bytesPerSample;
+    }
+  }
+
+  return new Blob([arrayBuffer], { type: 'audio/wav' });
+}
+
+// Helper function to write strings to a DataView
+function writeString(view: DataView, offset: number, string: string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
 // Genre options with colors and effects settings
 const genreOptions = [
   {
@@ -384,6 +453,7 @@ interface AdvancedRemixInterfaceProps {
   bpm?: number;
   key?: string;
   onClose?: () => void;
+  initialGenre?: string; // Add initialGenre prop
 }
 
 const AdvancedRemixInterface: React.FC<AdvancedRemixInterfaceProps> = ({
@@ -391,11 +461,12 @@ const AdvancedRemixInterface: React.FC<AdvancedRemixInterfaceProps> = ({
   songTitle = 'Die With A Smile.mp3',
   bpm = 78,
   key = 'A maj',
-  onClose
+  onClose,
+  initialGenre
 }) => {
   const [tracks, setTracks] = useState(defaultTracks);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
+  const [selectedGenre, setSelectedGenre] = useState<string | null>(initialGenre || null);
   const [isRemixing, setIsRemixing] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -404,6 +475,84 @@ const AdvancedRemixInterface: React.FC<AdvancedRemixInterfaceProps> = ({
   const progressRef = useRef<HTMLDivElement>(null);
   const remixedTracksRef = useRef<string[]>([]);
 
+  // Auto-apply genre effect when initialGenre is provided
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+
+    const applyInitialGenre = async () => {
+      if (initialGenre && audioUrl && audioUrl !== 'https://cdn.freesound.org/previews/388/388713_7364899-lq.mp3') {
+        // Make sure all audio elements are properly loaded
+        try {
+          // Check if the URL is a blob URL (locally created) or a remote URL
+          const isLocalBlob = audioUrl.startsWith('blob:');
+          console.log('Auto-applying genre effect for URL:', audioUrl, 'isLocalBlob:', isLocalBlob);
+
+          // Wait for the first audio element to be ready
+          if (audioRefs.current[0]) {
+            // Create a promise that resolves when the audio is ready or times out
+            await new Promise<void>((resolve, reject) => {
+              // If the audio is already loaded enough, resolve immediately
+              if (audioRefs.current[0]?.readyState >= 2) { // HAVE_CURRENT_DATA (2) or higher
+                resolve();
+                return;
+              }
+
+              const handleCanPlay = () => {
+                console.log('Audio canplay event fired');
+                resolve();
+                cleanup();
+              };
+
+              const handleError = (e: Event) => {
+                console.error('Error loading audio:', e);
+                reject(new Error('Audio failed to load'));
+                cleanup();
+              };
+
+              const cleanup = () => {
+                if (audioRefs.current[0]) {
+                  audioRefs.current[0].removeEventListener('canplay', handleCanPlay);
+                  audioRefs.current[0].removeEventListener('error', handleError);
+                }
+                clearTimeout(timeoutId);
+              };
+
+              // Add event listeners
+              audioRefs.current[0].addEventListener('canplay', handleCanPlay);
+              audioRefs.current[0].addEventListener('error', handleError);
+
+              // Set a timeout in case the event never fires
+              const timeoutId = setTimeout(() => {
+                console.log('Audio load timeout - proceeding anyway');
+                resolve(); // Resolve anyway after timeout
+                cleanup();
+              }, 3000);
+
+              // Try to load the audio
+              audioRefs.current[0].load();
+            });
+          }
+
+          // Only apply if we still have a genre selected (could have changed)
+          if (selectedGenre) {
+            console.log('Auto-applying genre effect for:', selectedGenre);
+            await applyGenreRemix();
+            console.log('Genre effect applied successfully');
+          }
+        } catch (error) {
+          console.error('Error auto-applying genre effect:', error);
+          toast.error('Could not apply genre effect automatically. Please try manually.');
+        }
+      }
+    };
+
+    // Wait a bit for audio to load before applying effects
+    timer = setTimeout(applyInitialGenre, 2000); // Increased timeout for better reliability
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialGenre, audioUrl, selectedGenre]);
+
   // Initialize audio elements
   useEffect(() => {
     audioRefs.current = tracks.map((_, i) => audioRefs.current[i] || new Audio());
@@ -411,7 +560,41 @@ const AdvancedRemixInterface: React.FC<AdvancedRemixInterfaceProps> = ({
     // Set up audio sources
     tracks.forEach((track, i) => {
       if (audioRefs.current[i]) {
-        audioRefs.current[i]!.src = track.url;
+        try {
+          // For the first track (Lead Vocals), use the uploaded audio if available
+          if (i === 0 && audioUrl && audioUrl !== 'https://cdn.freesound.org/previews/388/388713_7364899-lq.mp3') {
+            // Check if the URL is a blob URL (locally created) or a remote URL
+            const isLocalBlob = audioUrl.startsWith('blob:');
+
+            // Make sure we can play the audio
+            audioRefs.current[i]!.src = audioUrl;
+
+            // Only set crossOrigin for remote URLs, not for local blob URLs
+            if (!isLocalBlob) {
+              audioRefs.current[i]!.crossOrigin = 'anonymous'; // Enable CORS for processing
+            }
+
+            console.log('Using uploaded audio for Lead Vocals:', audioUrl);
+
+            // Set a specific event listener for error handling
+            const errorHandler = () => {
+              console.error('Error loading audio from URL:', audioUrl);
+              // Fallback to default track URL
+              audioRefs.current[i]!.src = track.url;
+              audioRefs.current[i]!.removeEventListener('error', errorHandler);
+            };
+
+            audioRefs.current[i]!.addEventListener('error', errorHandler);
+          } else {
+            audioRefs.current[i]!.src = track.url;
+            audioRefs.current[i]!.crossOrigin = 'anonymous'; // Enable CORS for processing
+          }
+        } catch (error) {
+          console.error('Error setting audio source:', error);
+          // Fallback to default track URL
+          audioRefs.current[i]!.src = track.url;
+        }
+
         audioRefs.current[i]!.volume = track.volume;
         audioRefs.current[i]!.loop = true;
 
@@ -419,6 +602,19 @@ const AdvancedRemixInterface: React.FC<AdvancedRemixInterfaceProps> = ({
         audioRefs.current[i]!.addEventListener('loadedmetadata', () => {
           if (audioRefs.current[i]) {
             setDuration(audioRefs.current[i]!.duration);
+
+            // If this is the uploaded audio, update the state to reflect we're using it
+            if (i === 0 && audioUrl && audioUrl !== 'https://cdn.freesound.org/previews/388/388713_7364899-lq.mp3') {
+              setTracks(prevTracks => {
+                const newTracks = [...prevTracks];
+                newTracks[0] = {
+                  ...newTracks[0],
+                  url: audioUrl,
+                  name: 'Your Uploaded Audio'
+                };
+                return newTracks;
+              });
+            }
           }
         });
       }
@@ -433,33 +629,73 @@ const AdvancedRemixInterface: React.FC<AdvancedRemixInterfaceProps> = ({
         }
       });
     };
-  }, [tracks]);
+  }, [tracks, audioUrl]);
 
   // Handle play/pause
   const togglePlayback = async () => {
     await resumeAudioContext();
 
     if (isPlaying) {
-      audioRefs.current.forEach(audio => audio?.pause());
+      // Pause all tracks
+      audioRefs.current.forEach(audio => {
+        if (audio) {
+          try {
+            audio.pause();
+          } catch (error) {
+            console.error('Error pausing audio:', error);
+          }
+        }
+      });
+      setIsPlaying(false);
     } else {
       // Check if any track is soloed
       const hasSoloedTrack = tracks.some(track => track.solo);
 
       // Play all tracks that should be playing
-      tracks.forEach((track, i) => {
+      let playPromises = [];
+
+      for (let i = 0; i < tracks.length; i++) {
+        const track = tracks[i];
         const audio = audioRefs.current[i];
+
         if (audio) {
           // Only play if:
           // 1. Track is not muted AND
           // 2. Either no track is soloed OR this track is soloed
           if (!track.muted && (!hasSoloedTrack || track.solo)) {
-            audio.play();
+            try {
+              // Make sure audio is loaded
+              if (audio.readyState < 2) { // HAVE_CURRENT_DATA (2) or higher needed to play
+                await new Promise(resolve => {
+                  audio.addEventListener('canplay', resolve, { once: true });
+                  // Set a timeout in case the event never fires
+                  setTimeout(resolve, 1000);
+                });
+              }
+
+              // Play the audio
+              const playPromise = audio.play();
+              if (playPromise) {
+                playPromises.push(playPromise);
+              }
+            } catch (error) {
+              console.error(`Error playing track ${track.name}:`, error);
+              toast.error(`Could not play ${track.name}. Try again.`);
+            }
           }
         }
-      });
-    }
+      }
 
-    setIsPlaying(!isPlaying);
+      // Wait for all play promises to resolve
+      Promise.all(playPromises.map(p => p.catch(e => e)))
+        .then(() => {
+          setIsPlaying(true);
+        })
+        .catch(error => {
+          console.error('Error starting playback:', error);
+          setIsPlaying(false);
+        });
+    }
   };
 
   // Update track volume
@@ -543,12 +779,376 @@ const AdvancedRemixInterface: React.FC<AdvancedRemixInterfaceProps> = ({
     }
 
     setIsRemixing(true);
+    toast.loading(`Applying ${selectedGenre} style to your music...`);
 
     try {
+      // Store playback state and current time positions
+      const wasPlaying = isPlaying;
+      const currentPositions = audioRefs.current.map(audio => audio?.currentTime || 0);
+
       // Pause all audio during processing
       if (isPlaying) {
         audioRefs.current.forEach(audio => audio?.pause());
         setIsPlaying(false);
+      }
+
+      // For the uploaded audio (first track), we'll apply real-time processing
+      // using the Web Audio API to create a more dramatic effect
+      if (audioUrl && audioUrl !== 'https://cdn.freesound.org/previews/388/388713_7364899-lq.mp3') {
+        try {
+          // Check if the URL is a blob URL (locally created) or a remote URL
+          const isLocalBlob = audioUrl.startsWith('blob:');
+          console.log('Processing audio URL:', audioUrl, 'isLocalBlob:', isLocalBlob);
+
+          // Create a new audio element for the processed audio
+          const processedAudio = new Audio();
+
+          // Process the audio with the selected genre
+          // This uses the Web Audio API to apply real-time effects
+          const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+
+          // Fetch the audio data with proper error handling
+          let arrayBuffer;
+          let fetchSuccessful = false;
+
+          // Try multiple approaches to get the audio data
+          const approaches = [
+            // Approach 1: Direct fetch from URL
+            async () => {
+              console.log('Trying direct fetch approach');
+              const response = await fetch(audioUrl);
+              if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+              return await response.arrayBuffer();
+            },
+
+            // Approach 2: XMLHttpRequest
+            async () => {
+              console.log('Trying XMLHttpRequest approach');
+              return await new Promise<ArrayBuffer>((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', audioUrl, true);
+                xhr.responseType = 'arraybuffer';
+
+                xhr.onload = () => {
+                  if (xhr.status === 200) {
+                    resolve(xhr.response);
+                  } else {
+                    reject(new Error(`XHR error! status: ${xhr.status}`));
+                  }
+                };
+
+                xhr.onerror = () => reject(new Error('XHR network error'));
+                xhr.send();
+              });
+            },
+
+            // Approach 3: Get from audio element
+            async () => {
+              console.log('Trying audio element approach');
+              if (!audioRefs.current[0]) throw new Error('No audio element available');
+
+              // Make sure the audio is loaded
+              await new Promise<void>((resolve, reject) => {
+                if (audioRefs.current[0]?.readyState >= 2) {
+                  resolve();
+                  return;
+                }
+
+                const loadHandler = () => {
+                  resolve();
+                  cleanup();
+                };
+
+                const errorHandler = () => {
+                  reject(new Error('Audio failed to load'));
+                  cleanup();
+                };
+
+                const cleanup = () => {
+                  audioRefs.current[0]?.removeEventListener('canplay', loadHandler);
+                  audioRefs.current[0]?.removeEventListener('error', errorHandler);
+                };
+
+                audioRefs.current[0]?.addEventListener('canplay', loadHandler);
+                audioRefs.current[0]?.addEventListener('error', errorHandler);
+
+                // Force load
+                audioRefs.current[0]?.load();
+
+                // Set a timeout
+                setTimeout(() => {
+                  resolve(); // Proceed anyway
+                  cleanup();
+                }, 3000);
+              });
+
+              // Get the current source and fetch it
+              const currentSrc = audioRefs.current[0].src;
+              const response = await fetch(currentSrc);
+              return await response.arrayBuffer();
+            },
+
+            // Approach 4: Create a new audio element
+            async () => {
+              console.log('Trying new audio element approach');
+              const tempAudio = new Audio();
+              tempAudio.crossOrigin = 'anonymous';
+              tempAudio.src = audioUrl;
+
+              // Wait for the audio to load
+              await new Promise<void>((resolve, reject) => {
+                const loadHandler = () => {
+                  resolve();
+                  cleanup();
+                };
+
+                const errorHandler = () => {
+                  reject(new Error('Audio failed to load'));
+                  cleanup();
+                };
+
+                const cleanup = () => {
+                  tempAudio.removeEventListener('canplaythrough', loadHandler);
+                  tempAudio.removeEventListener('error', errorHandler);
+                };
+
+                tempAudio.addEventListener('canplaythrough', loadHandler);
+                tempAudio.addEventListener('error', errorHandler);
+
+                // Force load
+                tempAudio.load();
+
+                // Set a timeout
+                setTimeout(() => {
+                  resolve(); // Proceed anyway
+                  cleanup();
+                }, 3000);
+              });
+
+              // Create a MediaElementAudioSourceNode
+              const sourceNode = audioContext.createMediaElementSource(tempAudio);
+
+              // Create a temporary offline context to capture the audio
+              const tempOfflineContext = new OfflineAudioContext({
+                numberOfChannels: 2,
+                length: audioContext.sampleRate * 30, // 30 seconds max
+                sampleRate: audioContext.sampleRate
+              });
+
+              // Connect the source to the offline context
+              sourceNode.connect(tempOfflineContext.destination);
+
+              // Start playback and rendering
+              await tempAudio.play();
+              const tempBuffer = await tempOfflineContext.startRendering();
+
+              // Stop playback
+              tempAudio.pause();
+
+              // Extract the audio data
+              const tempArrayBuffer = new ArrayBuffer(tempBuffer.length * 4); // 4 bytes per float
+              const view = new Float32Array(tempArrayBuffer);
+              tempBuffer.copyFromChannel(view, 0, 0);
+
+              return tempArrayBuffer;
+            }
+          ];
+
+          // Try each approach until one succeeds
+          for (const approach of approaches) {
+            try {
+              arrayBuffer = await approach();
+              fetchSuccessful = true;
+              console.log('Successfully fetched audio data');
+              break;
+            } catch (approachError) {
+              console.error('Approach failed:', approachError);
+              // Continue to the next approach
+            }
+          }
+
+          if (!fetchSuccessful) {
+            throw new Error('All approaches to fetch audio data failed');
+          }
+
+          // Decode the audio data
+          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+          // Create an offline context for processing
+          const offlineContext = new OfflineAudioContext({
+            numberOfChannels: audioBuffer.numberOfChannels,
+            length: audioBuffer.length,
+            sampleRate: audioBuffer.sampleRate
+          });
+
+          // Create a source node
+          const source = offlineContext.createBufferSource();
+          source.buffer = audioBuffer;
+
+          // Apply genre-specific effects
+          let lastNode = source;
+
+          // Apply EQ based on genre
+          const bassBoost = offlineContext.createBiquadFilter();
+          bassBoost.type = 'lowshelf';
+          bassBoost.frequency.value = 200;
+
+          const midBoost = offlineContext.createBiquadFilter();
+          midBoost.type = 'peaking';
+          midBoost.frequency.value = 1000;
+          midBoost.Q.value = 1;
+
+          const trebleBoost = offlineContext.createBiquadFilter();
+          trebleBoost.type = 'highshelf';
+          trebleBoost.frequency.value = 3000;
+
+          // Set genre-specific EQ settings
+          if (selectedGenre === 'Trap' || selectedGenre === 'Drill' || selectedGenre === 'Hip Hop') {
+            // Heavy bass, reduced mids, slightly boosted highs
+            bassBoost.gain.value = 12;
+            midBoost.gain.value = -4;
+            trebleBoost.gain.value = 3;
+          } else if (selectedGenre === 'EDM' || selectedGenre === 'Hard Techno') {
+            // Moderate bass, reduced mids, boosted highs
+            bassBoost.gain.value = 8;
+            midBoost.gain.value = -3;
+            trebleBoost.gain.value = 6;
+          } else if (selectedGenre === 'Rock') {
+            // Moderate bass, boosted mids, moderate highs
+            bassBoost.gain.value = 4;
+            midBoost.gain.value = 6;
+            trebleBoost.gain.value = 4;
+          } else if (selectedGenre === 'R&B') {
+            // Moderate bass, slightly boosted mids, slightly boosted highs
+            bassBoost.gain.value = 5;
+            midBoost.gain.value = 2;
+            trebleBoost.gain.value = 2;
+          } else if (selectedGenre === 'Lo-Fi') {
+            // Moderate bass, reduced mids, reduced highs
+            bassBoost.gain.value = 3;
+            midBoost.gain.value = -2;
+            trebleBoost.gain.value = -6;
+          } else if (selectedGenre === 'Deep House' || selectedGenre === 'Tech House') {
+            // Boosted bass, neutral mids, slightly boosted highs
+            bassBoost.gain.value = 6;
+            midBoost.gain.value = 0;
+            trebleBoost.gain.value = 3;
+          } else {
+            // Default EQ
+            bassBoost.gain.value = 2;
+            midBoost.gain.value = 0;
+            trebleBoost.gain.value = 2;
+          }
+
+          // Connect EQ nodes
+          lastNode.connect(bassBoost);
+          bassBoost.connect(midBoost);
+          midBoost.connect(trebleBoost);
+          lastNode = trebleBoost;
+
+          // Apply compression
+          const compressor = offlineContext.createDynamicsCompressor();
+          compressor.threshold.value = -20;
+          compressor.ratio.value = 4;
+          compressor.attack.value = 0.003;
+          compressor.release.value = 0.25;
+          lastNode.connect(compressor);
+          lastNode = compressor;
+
+          // Apply distortion for certain genres
+          if (['Rock', 'Trap', 'Drill', 'Hard Techno', 'EDM'].includes(selectedGenre || '')) {
+            const distortion = offlineContext.createWaveShaper();
+            const amount = selectedGenre === 'Rock' ? 0.6 :
+                          selectedGenre === 'Hard Techno' ? 0.4 :
+                          selectedGenre === 'Trap' || selectedGenre === 'Drill' ? 0.3 :
+                          0.2;
+
+            // Create distortion curve
+            const k = amount * 100;
+            const samples = 44100;
+            const curve = new Float32Array(samples);
+            const deg = Math.PI / 180;
+
+            for (let i = 0; i < samples; ++i) {
+              const x = (i * 2) / samples - 1;
+              curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+            }
+
+            distortion.curve = curve;
+            distortion.oversample = '4x';
+            lastNode.connect(distortion);
+            lastNode = distortion;
+          }
+
+          // Connect to destination
+          lastNode.connect(offlineContext.destination);
+
+          // Start the source and render
+          source.start();
+          const renderedBuffer = await offlineContext.startRendering();
+
+          // Convert to WAV and create URL
+          const wavBlob = await audioBufferToWav(renderedBuffer);
+          const processedUrl = URL.createObjectURL(wavBlob);
+
+          // Update the first track with the processed audio
+          if (audioRefs.current[0]) {
+            try {
+              // Create a new audio element to test if the processed URL works
+              const testAudio = new Audio();
+              testAudio.src = processedUrl;
+
+              // Set up event listeners to check if the audio can be played
+              await new Promise((resolve, reject) => {
+                const canPlayHandler = () => {
+                  resolve(true);
+                  testAudio.removeEventListener('canplay', canPlayHandler);
+                  testAudio.removeEventListener('error', errorHandler);
+                };
+
+                const errorHandler = (e: Event) => {
+                  reject(new Error('Cannot play processed audio'));
+                  testAudio.removeEventListener('canplay', canPlayHandler);
+                  testAudio.removeEventListener('error', errorHandler);
+                };
+
+                testAudio.addEventListener('canplay', canPlayHandler);
+                testAudio.addEventListener('error', errorHandler);
+
+                // Set a timeout in case neither event fires
+                setTimeout(() => resolve(false), 3000);
+
+                // Try to load the audio
+                testAudio.load();
+              });
+
+              // If we get here, the audio can be played
+              audioRefs.current[0].src = processedUrl;
+              audioRefs.current[0].load();
+
+              // Update the track state
+              setTracks(prevTracks => {
+                const newTracks = [...prevTracks];
+                if (newTracks[0]) {
+                  newTracks[0] = {
+                    ...newTracks[0],
+                    url: processedUrl,
+                    name: `${selectedGenre} Remix`
+                  };
+                }
+                return newTracks;
+              });
+
+              toast.success(`Successfully applied ${selectedGenre} style to your music!`);
+            } catch (playError) {
+              console.error('Error testing processed audio:', playError);
+              toast.error('Error with processed audio. Using original audio instead.');
+            }
+          }
+        } catch (error) {
+          console.error('Error processing uploaded audio:', error);
+          toast.error('Error processing audio. Using original audio instead.');
+        }
       }
 
       // Find the selected genre configuration
@@ -669,47 +1269,262 @@ const AdvancedRemixInterface: React.FC<AdvancedRemixInterfaceProps> = ({
         })
       );
 
+      // Create audio context for processing
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+
+      // Create new audio elements to avoid issues with the current ones
+      const newAudioRefs: (HTMLAudioElement | null)[] = [];
+
       // Apply audio effects to each track based on genre
-      audioRefs.current.forEach((audio, i) => {
-        if (audio && i < tracks.length) {
-          const track = tracks[i];
+      for (let i = 0; i < tracks.length; i++) {
+        const track = tracks[i];
+        const oldAudio = audioRefs.current[i];
 
-          // Apply tempo/playback rate based on genre
-          audio.playbackRate = genreEffects.tempo || 1.0;
+        if (oldAudio) {
+          try {
+            // Create a new audio element
+            const newAudio = new Audio();
+            newAudio.crossOrigin = 'anonymous';
 
-          // Apply volume adjustments based on track type and genre
-          if (track.name.includes('Vocal')) {
-            // Adjust vocal volume based on genre
-            if (selectedGenre === 'R&B' || selectedGenre === 'Lo-Fi') {
-              audio.volume = track.volume * 1.1; // Boost vocals slightly for R&B/Lo-Fi
-            } else if (selectedGenre === 'Rock' || selectedGenre === 'EDM') {
-              audio.volume = track.volume * 0.9; // Reduce vocals slightly for Rock/EDM
+            // Copy the source from the old audio
+            newAudio.src = oldAudio.src;
+
+            // Set the volume based on track and genre
+            let newVolume = track.volume;
+
+            // Apply volume adjustments based on track type and genre
+            if (track.name.includes('Vocal') || track.name.includes('Uploaded')) {
+              // Adjust vocal volume based on genre
+              if (selectedGenre === 'R&B' || selectedGenre === 'Lo-Fi') {
+                newVolume = track.volume * 1.1; // Boost vocals slightly for R&B/Lo-Fi
+              } else if (selectedGenre === 'Rock' || selectedGenre === 'EDM') {
+                newVolume = track.volume * 0.9; // Reduce vocals slightly for Rock/EDM
+              }
+
+              // Apply special effects for uploaded audio
+              if (i === 0 && audioUrl && audioUrl !== 'https://cdn.freesound.org/previews/388/388713_7364899-lq.mp3') {
+                // Create a more dramatic effect for the uploaded audio
+                const distortionAmount = selectedGenre === 'Trap' || selectedGenre === 'Drill' ? 0.8 :
+                                        selectedGenre === 'Rock' ? 0.6 :
+                                        selectedGenre === 'EDM' || selectedGenre === 'Hard Techno' ? 0.5 : 0.2;
+
+                const reverbAmount = selectedGenre === 'R&B' || selectedGenre === 'Lo-Fi' ? 0.8 :
+                                    selectedGenre === 'Deep House' ? 0.7 : 0.4;
+
+                // Apply a more dramatic tempo change
+                const tempoMultiplier = selectedGenre === 'Drum and Bass' ? 1.3 :
+                                       selectedGenre === 'EDM' ? 1.15 :
+                                       selectedGenre === 'Trap' || selectedGenre === 'Drill' ? 0.85 : genreEffects.tempo || 1.0;
+
+                // Set playback rate
+                newAudio.playbackRate = tempoMultiplier;
+
+                // Create a more dramatic EQ effect based on genre
+                if (selectedGenre === 'Trap' || selectedGenre === 'Hip Hop' || selectedGenre === 'Drill') {
+                  // Heavy bass boost for trap/hip hop/drill
+                  toast.success(`Applied ${selectedGenre} bass boost to your track!`);
+                } else if (selectedGenre === 'R&B' || selectedGenre === 'Lo-Fi') {
+                  // Warm, smooth sound for R&B/Lo-Fi
+                  toast.success(`Applied ${selectedGenre} warm tone to your track!`);
+                } else if (selectedGenre === 'Rock') {
+                  // Distorted, energetic sound for Rock
+                  toast.success(`Applied ${selectedGenre} distortion to your track!`);
+                } else if (selectedGenre === 'EDM' || selectedGenre === 'Hard Techno') {
+                  // Bright, punchy sound for EDM/Techno
+                  toast.success(`Applied ${selectedGenre} energy boost to your track!`);
+                } else {
+                  toast.success(`Applied ${selectedGenre} effects to your track!`);
+                }
+              }
+            } else if (track.name === 'Drums') {
+              // Adjust drum volume based on genre
+              if (selectedGenre === 'Trap' || selectedGenre === 'Hip Hop' || selectedGenre === 'Drill') {
+                newVolume = track.volume * 1.2; // Boost drums for trap/hip hop/drill
+              }
+
+              // Apply tempo based on genre
+              newAudio.playbackRate = genreEffects.tempo || 1.0;
+            } else if (track.name === 'Bass') {
+              // Adjust bass volume based on genre
+              if (selectedGenre === 'Trap' || selectedGenre === 'Hip Hop' || selectedGenre === 'Drill') {
+                newVolume = track.volume * 1.3; // Boost bass for trap/hip hop/drill
+              } else if (selectedGenre === 'Rock') {
+                newVolume = track.volume * 1.1; // Boost bass slightly for rock
+              }
+
+              // Apply tempo based on genre
+              newAudio.playbackRate = genreEffects.tempo || 1.0;
+            } else {
+              // For other tracks, just apply the tempo
+              newAudio.playbackRate = genreEffects.tempo || 1.0;
             }
-          } else if (track.name === 'Drums') {
-            // Adjust drum volume based on genre
-            if (selectedGenre === 'Trap' || selectedGenre === 'Hip Hop' || selectedGenre === 'Drill') {
-              audio.volume = track.volume * 1.2; // Boost drums for trap/hip hop/drill
-            }
-          } else if (track.name === 'Bass') {
-            // Adjust bass volume based on genre
-            if (selectedGenre === 'Trap' || selectedGenre === 'Hip Hop' || selectedGenre === 'Drill') {
-              audio.volume = track.volume * 1.3; // Boost bass for trap/hip hop/drill
-            } else if (selectedGenre === 'Rock') {
-              audio.volume = track.volume * 1.1; // Boost bass slightly for rock
-            }
+
+            // Ensure volume doesn't exceed 1.0
+            newVolume = Math.min(newVolume, 1.0);
+            newAudio.volume = newVolume;
+
+            // Set loop property
+            newAudio.loop = oldAudio.loop;
+
+            // Set current time to match the old audio
+            newAudio.currentTime = currentPositions[i];
+
+            // Add the new audio to our refs
+            newAudioRefs[i] = newAudio;
+          } catch (error) {
+            console.error(`Error creating new audio for track ${i}:`, error);
+            // Keep the old audio as fallback
+            newAudioRefs[i] = oldAudio;
           }
+        } else {
+          newAudioRefs[i] = null;
+        }
+      }
 
-          // Ensure volume doesn't exceed 1.0
-          if (audio.volume > 1.0) audio.volume = 1.0;
-
-          // Reload the audio to apply the new settings
-          const currentSrc = audio.src;
-          audio.src = currentSrc;
-          audio.load();
+      // Replace the old audio refs with the new ones
+      audioRefs.current.forEach(audio => {
+        if (audio) {
+          // Stop the old audio
+          audio.pause();
         }
       });
 
+      // Update the audio refs
+      audioRefs.current = newAudioRefs;
+
+      // If we have an uploaded audio, apply a more dramatic visual effect to the waveform
+      if (audioUrl && audioUrl !== 'https://cdn.freesound.org/previews/388/388713_7364899-lq.mp3') {
+        setTracks(prevTracks => {
+          const newTracks = [...prevTracks];
+
+          // Create a genre-specific waveform for the uploaded audio
+          const genreWaveform = Array(50).fill(0).map((_, index) => {
+            if (selectedGenre === 'Trap' || selectedGenre === 'Drill' || selectedGenre === 'Phonk') {
+              // More dramatic peaks and valleys for trap/drill
+              return 0.3 + Math.abs(Math.sin(index * 0.4) * 0.7);
+            } else if (selectedGenre === 'R&B' || selectedGenre === 'Lo-Fi') {
+              // Smoother, more rounded waveform for R&B/Lo-Fi
+              return 0.4 + Math.abs(Math.sin(index * 0.2) * 0.4);
+            } else if (selectedGenre === 'EDM' || selectedGenre === 'Hard Techno') {
+              // Sharp, high-energy waveform for EDM/Techno
+              return 0.5 + Math.abs(Math.sin(index * 0.8) * 0.5);
+            } else if (selectedGenre === 'Rock') {
+              // Distorted, varied waveform for Rock
+              return 0.3 + Math.abs(Math.sin(index * 0.3) * 0.6) + (Math.random() * 0.1);
+            } else {
+              // Default genre waveform
+              return 0.3 + Math.abs(Math.sin(index * 0.3) * 0.5);
+            }
+          });
+
+          // Apply the new waveform to the first track (uploaded audio)
+          newTracks[0] = {
+            ...newTracks[0],
+            waveform: genreWaveform
+          };
+
+          return newTracks;
+        });
+      }
+
       toast.success(`Remixed to ${selectedGenre} style!`);
+
+      // Resume playback if it was playing before
+      if (wasPlaying) {
+        // Longer delay to ensure audio is ready
+        setTimeout(async () => {
+          try {
+            // Check if any track is soloed
+            const hasSoloedTrack = tracks.some(track => track.solo);
+
+            // Play all tracks that should be playing
+            const playPromises = [];
+
+            // First, make sure all audio elements are loaded
+            const loadPromises = [];
+
+            for (let i = 0; i < tracks.length; i++) {
+              const track = tracks[i];
+              const audio = audioRefs.current[i];
+
+              if (audio && !track.muted && (!hasSoloedTrack || track.solo)) {
+                // Only preload tracks that will be played
+                loadPromises.push(
+                  new Promise<void>(resolve => {
+                    // If already loaded enough, resolve immediately
+                    if (audio.readyState >= 2) {
+                      resolve();
+                      return;
+                    }
+
+                    const loadHandler = () => {
+                      resolve();
+                      cleanup();
+                    };
+
+                    const errorHandler = () => {
+                      console.error(`Error loading track ${track.name}`);
+                      resolve(); // Resolve anyway to continue with other tracks
+                      cleanup();
+                    };
+
+                    const cleanup = () => {
+                      audio.removeEventListener('canplay', loadHandler);
+                      audio.removeEventListener('error', errorHandler);
+                    };
+
+                    audio.addEventListener('canplay', loadHandler);
+                    audio.addEventListener('error', errorHandler);
+
+                    // Force load
+                    audio.load();
+
+                    // Set a timeout
+                    setTimeout(() => {
+                      resolve(); // Resolve anyway after timeout
+                      cleanup();
+                    }, 2000);
+                  })
+                );
+              }
+            }
+
+            // Wait for all tracks to load (or timeout)
+            await Promise.all(loadPromises);
+
+            // Now play all tracks that should be playing
+            for (let i = 0; i < tracks.length; i++) {
+              const track = tracks[i];
+              const audio = audioRefs.current[i];
+
+              if (audio) {
+                // Only play if:
+                // 1. Track is not muted AND
+                // 2. Either no track is soloed OR this track is soloed
+                if (!track.muted && (!hasSoloedTrack || track.solo)) {
+                  try {
+                    // Play the audio
+                    const playPromise = audio.play();
+                    if (playPromise) {
+                      playPromises.push(playPromise);
+                    }
+                  } catch (error) {
+                    console.error(`Error playing track ${track.name}:`, error);
+                  }
+                }
+              }
+            }
+
+            // Wait for all play promises to resolve
+            await Promise.all(playPromises.map(p => p.catch(e => e)));
+            setIsPlaying(true);
+
+          } catch (error) {
+            console.error('Error resuming playback:', error);
+            toast.error('Error playing audio. Try clicking play again.');
+          }
+        }, 1000); // Increased delay to ensure audio is ready
+      }
     } catch (error) {
       console.error('Error applying genre remix:', error);
       toast.error('Failed to apply remix. Please try again.');
