@@ -26,6 +26,9 @@ const AudioPlayer = ({ title, isGenerating = false, audioUrl = '', genre = 'defa
   const effectiveAudioUrl = audioUrl || sampleAudio;
 
   // Track if we're using a voice-generated audio
+  const [isGeneratedAudio, setIsGeneratedAudio] = useState(false);
+  const [loadAttempts, setLoadAttempts] = useState(0);
+  const maxLoadAttempts = 3;
 
   useEffect(() => {
     // Simulating progress for demo purposes
@@ -42,6 +45,14 @@ const AudioPlayer = ({ title, isGenerating = false, audioUrl = '', genre = 'defa
     return () => clearInterval(interval);
   }, [isGenerating]);
 
+  // Reset state when URL changes
+  useEffect(() => {
+    setIsAudioReady(false);
+    setEffectsApplied(false);
+    setLoadAttempts(0);
+    setIsGeneratedAudio(audioUrl !== sampleAudio && !!audioUrl);
+  }, [audioUrl, sampleAudio]);
+
   useEffect(() => {
     // Create a new audio element when the component mounts or URL changes
     if (audioRef.current) {
@@ -54,22 +65,30 @@ const AudioPlayer = ({ title, isGenerating = false, audioUrl = '', genre = 'defa
 
     // Create and configure the audio element
     const audio = new Audio();
-    audio.src = effectiveAudioUrl;
-    audio.crossOrigin = "anonymous";
-    audio.preload = "auto";
-    audioRef.current = audio;
 
-    // Set up event listeners
+    // Set up event listeners before setting the source
     audio.addEventListener('loadedmetadata', handleLoadedMetadata);
     audio.addEventListener('timeupdate', handleTimeUpdate);
     audio.addEventListener('ended', () => setIsPlaying(false));
     audio.addEventListener('canplaythrough', handleCanPlayThrough);
     audio.addEventListener('error', handleAudioError);
 
-    // Preload the audio
-    audio.load();
+    // Configure the audio element
+    audio.crossOrigin = "anonymous";
+    audio.preload = "auto";
 
-    console.log("Audio source set to:", effectiveAudioUrl);
+    // Set the source
+    audio.src = effectiveAudioUrl;
+    audioRef.current = audio;
+
+    // Preload the audio
+    try {
+      audio.load();
+      console.log("Audio loading started for:", effectiveAudioUrl);
+    } catch (loadError) {
+      console.error("Error loading audio:", loadError);
+      handleAudioError(new ErrorEvent('error', { error: loadError }));
+    }
 
     // Clean up
     return () => {
@@ -79,6 +98,16 @@ const AudioPlayer = ({ title, isGenerating = false, audioUrl = '', genre = 'defa
       audio.removeEventListener('ended', () => setIsPlaying(false));
       audio.removeEventListener('canplaythrough', handleCanPlayThrough);
       audio.removeEventListener('error', handleAudioError);
+
+      // Revoke object URL if it's a blob URL
+      if (effectiveAudioUrl.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(effectiveAudioUrl);
+          console.log("Revoked object URL:", effectiveAudioUrl);
+        } catch (revokeError) {
+          console.warn("Error revoking object URL:", revokeError);
+        }
+      }
     };
   }, [effectiveAudioUrl]);
 
@@ -108,7 +137,45 @@ const AudioPlayer = ({ title, isGenerating = false, audioUrl = '', genre = 'defa
 
   const handleAudioError = (e: Event) => {
     console.error('Audio error:', e);
-    toast.error('Error loading audio. Please try again.');
+
+    // Increment load attempts
+    const newAttempts = loadAttempts + 1;
+    setLoadAttempts(newAttempts);
+
+    if (newAttempts < maxLoadAttempts) {
+      // Try again with a delay
+      console.log(`Retrying audio load (attempt ${newAttempts} of ${maxLoadAttempts})...`);
+      setTimeout(() => {
+        if (audioRef.current) {
+          audioRef.current.load();
+        }
+      }, 1000);
+    } else if (isGeneratedAudio && audioUrl !== sampleAudio) {
+      // Fall back to sample audio after max attempts
+      console.log('Falling back to sample audio after max attempts');
+      toast.error('Error loading generated audio. Using sample audio instead.');
+
+      // Create a new audio element with the sample
+      const fallbackAudio = new Audio(sampleAudio);
+      fallbackAudio.crossOrigin = "anonymous";
+      fallbackAudio.preload = "auto";
+
+      // Set up event listeners
+      fallbackAudio.addEventListener('loadedmetadata', handleLoadedMetadata);
+      fallbackAudio.addEventListener('timeupdate', handleTimeUpdate);
+      fallbackAudio.addEventListener('ended', () => setIsPlaying(false));
+      fallbackAudio.addEventListener('canplaythrough', handleCanPlayThrough);
+
+      // Replace the current audio element
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      audioRef.current = fallbackAudio;
+      fallbackAudio.load();
+    } else {
+      // Show error message
+      toast.error('Error loading audio. Please try again.');
+    }
   };
 
   const togglePlayPause = () => {

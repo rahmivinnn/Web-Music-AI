@@ -435,57 +435,177 @@ const applyGenreEffects = (audioContext: AudioContext, audioBuffer: AudioBuffer,
 // Play generated audio with voice type and genre effects
 export const playGeneratedAudio = async (prompt: string, voiceType: string = 'default', genre: string = 'default'): Promise<string> => {
   try {
+    console.log('Starting audio generation with voice:', voiceType, 'and genre:', genre);
     const audioContext = getAudioContext();
 
     // Generate musical tones based on the text and voice type
     const audioBuffer = await generateMusicalTones(prompt, voiceType, genre);
+    console.log('Generated audio buffer:', audioBuffer.duration, 'seconds');
 
     // Apply genre-specific effects
     const processedBuffer = applyGenreEffects(audioContext, audioBuffer, genre);
+    console.log('Applied', genre, 'effects to audio');
 
-    // Create a source node for playback
-    const source = audioContext.createBufferSource();
-    source.buffer = processedBuffer;
+    try {
+      // Create a source node for live playback
+      const source = audioContext.createBufferSource();
+      source.buffer = processedBuffer;
 
-    // Create a gain node for volume control
-    const gainNode = audioContext.createGain();
-    gainNode.gain.value = 0.7; // Set volume
+      // Create a gain node for volume control
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 0.7; // Set volume
 
-    // Connect the nodes
-    source.connect(gainNode);
-    gainNode.connect(audioContext.destination);
+      // Connect the nodes
+      source.connect(gainNode);
+      gainNode.connect(audioContext.destination);
 
-    // Start playback
-    source.start();
-    console.log('Playing generated audio with voice type:', voiceType, 'and genre:', genre);
+      // Start playback
+      source.start();
+      console.log('Started live playback');
+    } catch (playbackError) {
+      console.warn('Live playback failed, continuing with file generation:', playbackError);
+    }
 
-    // Convert the buffer to a blob for the audio player
-    const offlineContext = new OfflineAudioContext({
-      numberOfChannels: processedBuffer.numberOfChannels,
-      length: processedBuffer.length,
-      sampleRate: processedBuffer.sampleRate
-    });
+    // Create a simple WAV file directly from the processed buffer
+    // This is more reliable than using OfflineAudioContext
+    const wavBlob = await simpleAudioBufferToWav(processedBuffer);
+    console.log('Created WAV blob of size:', wavBlob.size, 'bytes');
 
-    const offlineSource = offlineContext.createBufferSource();
-    offlineSource.buffer = processedBuffer;
-    offlineSource.connect(offlineContext.destination);
-    offlineSource.start();
-
-    const renderedBuffer = await offlineContext.startRendering();
-
-    // Convert the rendered buffer to a WAV file
-    const wavBlob = await audioBufferToWav(renderedBuffer);
+    // Create a URL for the audio player
     const audioUrl = URL.createObjectURL(wavBlob);
+    console.log('Created audio URL:', audioUrl);
 
     return audioUrl;
   } catch (error) {
-    console.error('Error playing generated audio:', error);
+    console.error('Error in audio generation process:', error);
 
-    // Return a fallback URL if generation fails
-    const fallbackSample = voiceSamples[voiceType] || voiceSamples.default;
-    return fallbackSample.fallbackUrl;
+    // Use a reliable fallback URL
+    const fallbackUrl = 'https://cdn.freesound.org/previews/388/388713_7364899-lq.mp3';
+    console.log('Using fallback audio URL:', fallbackUrl);
+    return fallbackUrl;
   }
 };
+
+// Simplified WAV file generator that's more reliable
+async function simpleAudioBufferToWav(audioBuffer: AudioBuffer): Promise<Blob> {
+  try {
+    const numChannels = audioBuffer.numberOfChannels;
+    const sampleRate = audioBuffer.sampleRate;
+    const length = audioBuffer.length;
+    const bytesPerSample = 2; // 16-bit
+    const blockAlign = numChannels * bytesPerSample;
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = length * blockAlign;
+
+    // Create buffer with header space
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    // RIFF identifier
+    writeString(view, 0, 'RIFF');
+    // File length
+    view.setUint32(4, 36 + dataSize, true);
+    // RIFF type
+    writeString(view, 8, 'WAVE');
+
+    // Format chunk identifier
+    writeString(view, 12, 'fmt ');
+    // Format chunk length
+    view.setUint32(16, 16, true);
+    // Sample format (raw)
+    view.setUint16(20, 1, true);
+    // Channel count
+    view.setUint16(22, numChannels, true);
+    // Sample rate
+    view.setUint32(24, sampleRate, true);
+    // Byte rate (sample rate * block align)
+    view.setUint32(28, byteRate, true);
+    // Block align (channel count * bytes per sample)
+    view.setUint16(32, blockAlign, true);
+    // Bits per sample
+    view.setUint16(34, 8 * bytesPerSample, true);
+
+    // Data chunk identifier
+    writeString(view, 36, 'data');
+    // Data chunk length
+    view.setUint32(40, dataSize, true);
+
+    // Write the PCM samples
+    const dataOffset = 44;
+    let offset = dataOffset;
+
+    // Get all channel data
+    const channelData = [];
+    for (let channel = 0; channel < numChannels; channel++) {
+      channelData.push(audioBuffer.getChannelData(channel));
+    }
+
+    // Interleave the channel data and convert to 16-bit
+    for (let i = 0; i < length; i++) {
+      for (let channel = 0; channel < numChannels; channel++) {
+        // Clamp the sample to [-1.0, 1.0] range
+        const sample = Math.max(-1.0, Math.min(1.0, channelData[channel][i]));
+
+        // Convert to 16-bit signed integer
+        // Scale -1.0...1.0 to -32768...32767
+        const value = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+        view.setInt16(offset, value, true);
+        offset += bytesPerSample;
+      }
+    }
+
+    return new Blob([buffer], { type: 'audio/wav' });
+  } catch (error) {
+    console.error('Error creating WAV file:', error);
+    // Create a minimal valid WAV file as fallback
+    return createMinimalWavFile();
+  }
+}
+
+// Create a minimal valid WAV file with a short beep
+function createMinimalWavFile(): Blob {
+  // Create a 1-second, 1-channel, 44.1kHz WAV file with a simple tone
+  const sampleRate = 44100;
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = sampleRate * blockAlign; // 1 second
+
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  // RIFF header
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(view, 8, 'WAVE');
+
+  // Format chunk
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+
+  // Data chunk
+  writeString(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  // Write a simple beep tone
+  const frequency = 440; // A4 note
+  for (let i = 0; i < sampleRate; i++) {
+    const t = i / sampleRate;
+    const sample = Math.sin(2 * Math.PI * frequency * t) * 0.5; // 50% volume
+    const value = Math.floor(sample * 0x7FFF);
+    view.setInt16(44 + i * bytesPerSample, value, true);
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
 
 // Convert AudioBuffer to WAV format
 async function audioBufferToWav(audioBuffer: AudioBuffer): Promise<Blob> {
