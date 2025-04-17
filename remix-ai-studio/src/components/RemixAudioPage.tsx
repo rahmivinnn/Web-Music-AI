@@ -5,8 +5,9 @@ import StyleChip from './ui/StyleChip';
 import BPMSlider from './ui/BPMSlider';
 import GenreSelect from './ui/GenreSelect';
 import AudioPlayer from './ui/AudioPlayer';
+import AdvancedRemixInterface from './AdvancedRemixInterface';
 import { toast } from "sonner";
-import { PlusCircle } from 'lucide-react';
+import { PlusCircle, Wand2 } from 'lucide-react';
 import { processAudioFile, resumeAudioContext } from '@/utils/audioProcessor';
 
 const styles = ['Classic', 'Sad', 'Rock', 'Hiphop', 'Guitar music', 'High music'];
@@ -34,6 +35,7 @@ const RemixAudioPage = () => {
   const [showResult, setShowResult] = useState(false);
   const [generatedAudioUrl, setGeneratedAudioUrl] = useState('');
   const [processingError, setProcessingError] = useState<string | null>(null);
+  const [showAdvancedRemixer, setShowAdvancedRemixer] = useState(false);
 
   // Clean up object URLs when component unmounts
   useEffect(() => {
@@ -209,6 +211,40 @@ const RemixAudioPage = () => {
           {processingError && (
             <p className="text-red-400 text-sm mt-2">{processingError}</p>
           )}
+
+          {!isGenerating && showResult && (
+            <div className="mt-4">
+              <button
+                onClick={() => setShowAdvancedRemixer(true)}
+                className="flex items-center gap-2 bg-studio-accent text-white py-3 px-4 rounded-md font-medium hover:bg-opacity-90 transition-all mx-auto"
+              >
+                <Wand2 className="h-4 w-4" />
+                <span>Open Advanced Remix Studio</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {showAdvancedRemixer && (
+        <div className="fixed inset-0 bg-black bg-opacity-80 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="w-full max-w-6xl">
+            <div className="relative">
+              <button
+                onClick={() => setShowAdvancedRemixer(false)}
+                className="absolute top-4 right-4 text-white text-2xl hover:text-gray-300 z-10"
+              >
+                ×
+              </button>
+              <AdvancedRemixInterface
+                audioUrl={generatedAudioUrl}
+                songTitle={files[0]?.name || "Your Remix"}
+                bpm={bpm}
+                key={genre}
+                onClose={() => setShowAdvancedRemixer(false)}
+              />
+            </div>
+          </div>
         </div>
       )}
     </div>
