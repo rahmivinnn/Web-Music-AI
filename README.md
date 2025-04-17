@@ -10,16 +10,28 @@ A web application for generating audio from text and creating music remixes usin
 - Audio visualization
 - Genre-based audio effects
 
-## Deployment on Vercel
+## Deployment
 
-This project is configured for easy deployment on Vercel:
+### Netlify Deployment
+
+This project is configured for easy deployment on Netlify:
+
+1. Connect your GitHub repository to Netlify
+2. Netlify will automatically detect the configuration in `netlify.toml`
+3. The build settings are already configured:
+   - Base directory: `remix-ai-studio/`
+   - Build command: `npm run build`
+   - Publish directory: `dist`
+
+### Vercel Deployment
+
+This project is also configured for deployment on Vercel:
 
 1. Connect your GitHub repository to Vercel
 2. Use the following settings:
    - Framework Preset: Vite
-   - Build Command: `npm run build`
-   - Output Directory: `dist`
-   - Install Command: `npm install`
+   - Build Command: `cd remix-ai-studio && npm install && npm run build`
+   - Output Directory: `remix-ai-studio/dist`
 
 ## Development
 
