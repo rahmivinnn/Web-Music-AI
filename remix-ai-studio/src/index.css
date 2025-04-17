@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 0%;
+    --foreground: 210 40% 98%;
+
+    --card: 173 70% 15%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 173 70% 15%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 173 100% 43%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 173 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 173 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    --accent: 173 100% 43%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 173 32.6% 17.5%;
+    --input: 173 32.6% 17.5%;
+    --ring: 173 100% 43%;
+    --sidebar-background: 0 0% 3%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 173 100% 43%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 173 32.6% 17.5%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 173 32.6% 17.5%;
+    --sidebar-ring: 173 100% 43%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-black text-studio-text;
+  }
+}
+
+.drag-drop-area {
+  @apply border-2 border-dashed border-gray-600 rounded-lg p-12 text-center relative transition-all hover:border-studio-accent hover:bg-opacity-10;
+}
+
+.drag-drop-area.active {
+  @apply border-studio-accent bg-studio-accent bg-opacity-10;
+}
+
+.audio-player-container {
+  @apply relative bg-studio-card rounded-lg p-6 overflow-hidden;
+}
+
+.audio-player-wave {
+  @apply flex items-end space-x-1 h-8 justify-center mt-4;
+}
+
+.wave-bar {
+  @apply bg-studio-accent w-1 rounded-full;
+}
+
+.audio-visualizer {
+  @apply flex items-end justify-center space-x-1 h-20 my-4;
+}
+
+.visualizer-bar {
+  @apply bg-studio-accent w-2 rounded-full;
+}
+
+@keyframes audio-wave {
+  0% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+  100% { transform: scaleY(0.3); }
+}
+
+.dropdown-content {
+  @apply absolute z-10 mt-1 w-full bg-studio-card border border-gray-700 rounded-md shadow-lg;
+}
